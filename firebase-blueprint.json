@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "Transcript": {
+      "title": "Transcript",
+      "description": "Represents a speech-to-text transcription and its AI enhancements.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner of the transcript" },
+        "fileName": { "type": "string", "description": "Original file name" },
+        "fileType": { "type": "string", "description": "MIME type (video/mp4, audio/mp3, etc.)" },
+        "fileUrl": { "type": "string", "description": "URL to the file in storage" },
+        "status": { "type": "string", "enum": ["processing", "completed", "failed"] },
+        "text": { "type": "string", "description": "Full transcription text" },
+        "srt": { "type": "string", "description": "SRT formatted subtitles" },
+        "summary": { "type": "string", "description": "AI generated summary" },
+        "summaryPoints": { "type": "array", "items": { "type": "string" } },
+        "keyTakeaways": { "type": "array", "items": { "type": "string" } },
+        "language": { "type": "string", "description": "Detected language" },
+        "processingStep": { "type": "string", "description": "Current processing stage for UI" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "fileName", "status", "createdAt"]
+    },
+    "Translation": {
+      "title": "Translation",
+      "description": "Represents a translation of a transcript.",
+      "type": "object",
+      "properties": {
+        "transcriptId": { "type": "string", "description": "Draft ID of the transcript" },
+        "userId": { "type": "string" },
+        "targetLanguage": { "type": "string" },
+        "translatedText": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["transcriptId", "userId", "targetLanguage", "translatedText", "createdAt"]
+    }
+  },
+  "firestore": {
+    "transcripts": {
+      "schema": "Transcript",
+      "description": "Collection of user transcripts"
+    },
+    "transcripts/{transcriptId}/translations": {
+      "schema": "Translation",
+      "description": "Collection of translations for a specific transcript"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Georgia", serif;
+  
+  --color-background-main: #09090B;
+  --color-background-elevated: #0C0C0E;
+  --color-background-card: rgba(15, 15, 18, 0.6);
+  --color-border-primary: #1E293B; /* slate-800 */
+}
+
+@layer base {
+  body {
+    @apply bg-background-main text-slate-200 font-sans;
+  }
+}
+
+.transcript-text {
+  font-family: var(--font-serif);
+}

@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Primitive Definitions
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Phase 4: Validation Blueprints
+    function isValidTranscript(data) {
+      return data.userId == request.auth.uid &&
+             data.fileName is string && data.fileName.size() <= 256 &&
+             data.status in ['processing', 'completed', 'failed'] &&
+             data.createdAt == request.time &&
+             (data.fileUrl == "" || (data.fileUrl is string && data.fileUrl.size() <= 1024)) &&
+             data.keys().hasAll(['userId', 'fileName', 'status', 'createdAt']);
+    }
+
+    function isValidTranslation(data) {
+      return data.userId == request.auth.uid &&
+             data.transcriptId is string && isValidId(data.transcriptId) &&
+             data.targetLanguage is string && data.targetLanguage.size() <= 10 &&
+             data.translatedText is string && data.translatedText.size() <= 50000 &&
+             data.createdAt == request.time &&
+             data.keys().hasAll(['userId', 'transcriptId', 'targetLanguage', 'translatedText', 'createdAt']) &&
+             data.keys().size() == 5;
+    }
+
+    // Transcripts Collection
+    match /transcripts/{transcriptId} {
+      allow get: if isOwner(existing().userId) && isValidId(transcriptId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // CREATE: Must match schema and ID must be valid
+      allow create: if isSignedIn() && isValidTranscript(incoming()) && isValidId(transcriptId);
+      
+      // UPDATE: Split into Actions
+      allow update: if isOwner(existing().userId) && isValidId(transcriptId) && (
+        // Action: Update Status or AI Results
+        (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'text', 'srt', 'summary', 'summaryPoints', 'keyTakeaways', 'language', 'processingStep', 'fileUrl', 'updatedAt']) &&
+         (incoming().updatedAt == request.time || !incoming().keys().hasAny(['updatedAt'])))
+      );
+      
+      // DELETE: Only owner can delete
+      allow delete: if isOwner(existing().userId) && isValidId(transcriptId);
+
+      // Translations Subcollection
+      match /translations/{translationId} {
+        allow get: if isOwner(existing().userId) && isValidId(translationId);
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+        
+        allow create: if isSignedIn() && 
+                      isValidTranslation(incoming()) && 
+                      isValidId(translationId) &&
+                      // Relational Sync: Ensure parent transcript exists and user owns it
+                      get(/databases/$(database)/documents/transcripts/$(transcriptId)).data.userId == request.auth.uid;
+                      
+        allow update: if false; // Translations are immutable
+        allow delete: if isOwner(existing().userId) && isValidId(translationId);
+      }
+    }
+  }
+}
