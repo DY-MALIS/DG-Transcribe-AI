@@ -1,6 +1,5 @@
 import "dotenv/config";
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -404,6 +403,7 @@ export async function createApp(options: { includeVite?: boolean } = {}) {
 
   // Vite middleware for development
   if (includeVite) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
