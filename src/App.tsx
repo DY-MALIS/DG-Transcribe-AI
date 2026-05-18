@@ -35,7 +35,7 @@ import Markdown from 'react-markdown';
 
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024; // Supports long compressed audio/video uploads without browser base64 conversion.
 const AI_PROCESSING_TIMEOUT_MS = 60 * 60 * 1000;
-const isVercelRuntime = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+const isVercelRuntime = window.location.hostname.endsWith('.vercel.app');
 
 const formatFileSize = (bytes: number) => {
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -399,13 +399,9 @@ export default function App() {
         formData.append('media', file);
         const userApiKey = localStorage.getItem('dg_gemini_api_key') || '';
 
-        if (isVercelRuntime && !userApiKey) {
-          throw new Error('On Vercel, paste your Personal Gemini API Key in Quick Config before uploading media.');
-        }
-
         // Vercel serverless functions are not reliable for large media uploads.
         // In production, users with a personal key upload directly to Gemini from the browser.
-        const aiProcessingPromise = isVercelRuntime
+        const aiProcessingPromise = isVercelRuntime && userApiKey
           ? processMediaInBrowser(file, userApiKey)
           : fetch('/api/transcribe', {
               method: 'POST',
