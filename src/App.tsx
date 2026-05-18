@@ -273,11 +273,6 @@ export default function App() {
     setUploadError(null);
     const userApiKey = localStorage.getItem('dg_gemini_api_key') || '';
 
-    if (isVercelRuntime && !userApiKey) {
-      setUploadError('On Vercel, paste your Personal Gemini API Key in Quick Config and click Save before uploading media.');
-      return;
-    }
-
     if (!file.type.startsWith('audio/') && !file.type.startsWith('video/')) {
       setUploadError('Please upload an audio or video file.');
       return;
