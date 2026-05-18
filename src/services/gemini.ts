@@ -26,6 +26,10 @@ function getFriendlyGeminiError(error: unknown) {
     return 'Gemini took too long to process this file. Please try a shorter or compressed audio file.';
   }
 
+  if (lowerMessage.includes('thinking level') || lowerMessage.includes('thinkingconfig')) {
+    return 'This Gemini model does not support thinking mode. The app has been updated; please refresh and upload again.';
+  }
+
   return message || 'AI transcription failed.';
 }
 
@@ -111,7 +115,6 @@ export async function processMediaInBrowser(file: File, apiKey: string) {
       ],
       config: {
         responseMimeType: "application/json",
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseSchema: {
           type: Type.OBJECT,
           properties: {
