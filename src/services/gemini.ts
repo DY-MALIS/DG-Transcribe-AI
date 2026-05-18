@@ -1,139 +1,121 @@
-import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel, createPartFromUri, FileState } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function processMediaAI(fileBase64: string, mimeType: string) {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          parts: [
-            {
-              inlineData: {
-                data: fileBase64,
-                mimeType: mimeType,
-              },
-            },
-            {
-              text: `FASTEST TRANSCRIPTION:
-              1. DETECT language. 2. TRANSCRIBE word-for-word.
-              3. LABELS: Identify speakers (e.g. Speaker 1). Add "(ស្រី)" if female.
-              
-              JSON Format: {text, language, summary, points, takeaways}.
-              PRIORITY: SPEED.`,
-            },
-          ],
-        },
-      ],
-      config: {
-        responseMimeType: "application/json",
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            text: { type: Type.STRING, description: "Full transcription" },
-            language: { type: Type.STRING },
-            summary: { type: Type.STRING },
-            points: { type: Type.ARRAY, items: { type: Type.STRING } },
-            takeaways: { type: Type.ARRAY, items: { type: Type.STRING } },
-          },
-          required: ["text", "language", "summary", "points", "takeaways"],
-        },
-      },
-    });
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const userApiKey = localStorage.getItem('dg_gemini_api_key') || '';
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(userApiKey ? { 'X-Gemini-Api-Key': userApiKey } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
 
-    if (!response.text) {
-      throw new Error("No response text from Gemini");
+  if (!response.ok) {
+    throw new Error(payload.error || 'AI request failed.');
+  }
+
+  return payload as T;
+}
+
+async function waitForGeminiFile(ai: GoogleGenAI, fileName: string) {
+  const maxAttempts = 300;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const file = await ai.files.get({ name: fileName });
+
+    if (file.state === FileState.ACTIVE) {
+      return file;
     }
 
-    return JSON.parse(response.text);
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    throw error;
+    if (file.state === FileState.FAILED) {
+      throw new Error(file.error?.message || "Gemini could not process this media file.");
+    }
+
+    await sleep(2000);
   }
+
+  throw new Error("Gemini file preparation took too long. Please try a smaller or more compressed file.");
+}
+
+export async function processMediaInBrowser(file: File, apiKey: string) {
+  if (!apiKey.trim()) {
+    throw new Error("Personal Gemini API key is required for Vercel media uploads.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+  const uploadedFile = await ai.files.upload({
+    file,
+    config: {
+      mimeType: file.type,
+      displayName: file.name,
+    },
+  });
+  const readyFile = await waitForGeminiFile(ai, uploadedFile.name || "");
+
+  if (!readyFile.uri || !readyFile.mimeType) {
+    throw new Error("Gemini did not return a usable file URI.");
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        parts: [
+          createPartFromUri(readyFile.uri, readyFile.mimeType),
+          {
+            text: `FAST MODE TRANSCRIPTION:
+            - Detect language.
+            - Transcribe speech accurately.
+            - Preserve the full meaning; do not shorten important details.
+            - If a speaker's voice is clearly female, prefix that speaker's lines with "ស្រី:".
+            - If a speaker's voice is clearly male, prefix that speaker's lines with "ប្រុស:".
+            - If gender is unclear, use "អ្នកនិយាយ 1:", "អ្នកនិយាយ 2:", etc.
+            - Keep summary, points, and takeaways concise but complete.
+
+            Return JSON only: {text, language, summary, points, takeaways}.`,
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: "application/json",
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          text: { type: Type.STRING },
+          language: { type: Type.STRING },
+          summary: { type: Type.STRING },
+          points: { type: Type.ARRAY, items: { type: Type.STRING } },
+          takeaways: { type: Type.ARRAY, items: { type: Type.STRING } },
+        },
+        required: ["text", "language", "summary", "points", "takeaways"],
+      },
+    },
+  });
+
+  if (!response.text) {
+    throw new Error("No response text from Gemini");
+  }
+
+  return JSON.parse(response.text);
 }
 
 export async function summarizeTranscript(transcript: string, language: string = "original", customInstruction: string = "") {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Please summarize the following transcript deeply and intelligently. 
-      ${customInstruction ? `SPECIAL USER INSTRUCTION: ${customInstruction}` : "The summary should be comprehensive and professional, capturing the core essence and important details clearly. Do NOT make the summary too short; ensure it provides enough context to be fully understood."}
-      Provide the summary in ${language === "original" ? "the original language of the transcript" : language}.
-      
-      Transcript:
-      ${transcript}
-      
-      Output strictly in JSON format with fields: 'summary', 'points', 'takeaways'.`,
-      config: {
-        responseMimeType: "application/json",
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summary: { type: Type.STRING },
-            points: { type: Type.ARRAY, items: { type: Type.STRING } },
-            takeaways: { type: Type.ARRAY, items: { type: Type.STRING } },
-          },
-          required: ["summary", "points", "takeaways"],
-        },
-      },
-    });
-
-    if (!response.text) throw new Error("No response");
-    return JSON.parse(response.text);
-  } catch (error) {
-    console.error("Summarization Error:", error);
-    throw error;
-  }
+  return postJson<{ summary: string; points: string[]; takeaways: string[] }>('/api/summarize', {
+    transcript,
+    language,
+    instruction: customInstruction,
+  });
 }
 
 export async function translateText(text: string, targetLang: string) {
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `Translate the following text into ${targetLang}. Preserve any speaker labels.
-    
-    Text:
-    ${text}
-    
-    Output the translation as a plain string inside a JSON object with the field 'translatedText'.`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          translatedText: { type: Type.STRING },
-        },
-        required: ["translatedText"],
-      },
-    },
+  return postJson<{ translatedText: string }>('/api/translate', {
+    text,
+    targetLanguage: targetLang,
   });
-
-  return JSON.parse(response.text || "{}");
-}
-
-export async function generateActionItems(transcript: string) {
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `Analyze this transcript and extract actionable items and smart meeting notes.
-    
-    Transcript:
-    ${transcript}
-    
-    Output in JSON format with fields: 'actionItems' (array of strings), 'meetingNotes' (string).`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          actionItems: { type: Type.ARRAY, items: { type: Type.STRING } },
-          meetingNotes: { type: Type.STRING },
-        },
-        required: ["actionItems", "meetingNotes"],
-      },
-    },
-  });
-
-  return JSON.parse(response.text || "{}");
 }

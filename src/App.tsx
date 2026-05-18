@@ -25,13 +25,30 @@ import {
   Zap,
   Trash2
 } from 'lucide-react';
-import { auth, db, signInWithGoogle, logout, storage } from './lib/firebase';
+import { auth, completeGoogleRedirectSignIn, db, signInWithGoogle, logout, storage } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query, where, orderBy, onSnapshot, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, getDocs } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { cn, formatDuration, formatDate } from './lib/utils';
-import { processMediaAI, translateText, summarizeTranscript } from './services/gemini';
+import { processMediaInBrowser, translateText, summarizeTranscript } from './services/gemini';
 import Markdown from 'react-markdown';
+
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024; // Supports long compressed audio/video uploads without browser base64 conversion.
+const AI_PROCESSING_TIMEOUT_MS = 60 * 60 * 1000;
+const isVercelRuntime = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+
+const formatFileSize = (bytes: number) => {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+};
 
 // --- Error Handling ---
 enum OperationType {
@@ -160,11 +177,14 @@ export default function App() {
   const [translations, setTranslations] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [fakeProgress, setFakeProgress] = useState(0);
   const [summarizing, setSummarizing] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [viewLanguage, setViewLanguage] = useState<string>('original');
   const [agentInstruction, setAgentInstruction] = useState('');
+  const [userGeminiApiKey, setUserGeminiApiKey] = useState(() => localStorage.getItem('dg_gemini_api_key') || '');
 
   useEffect(() => {
     if (!selectedTranscript) {
@@ -189,16 +209,16 @@ export default function App() {
       setFakeProgress(0);
       interval = setInterval(() => {
         setFakeProgress(prev => {
-          if (prev >= 99) {
-            // Very slow crawl as we approach 100
-            const remaining = 100 - prev;
+          if (prev >= 96) {
+            // Hold below completion until the server returns the real result.
+            const remaining = 97 - prev;
             return prev + (remaining * 0.01); 
           }
           // Dynamic speed based on progress
-          const increment = prev < 60 ? 8 : prev < 90 ? 2 : 0.4;
-          return Math.min(99, prev + increment);
+          const increment = prev < 60 ? 12 : prev < 90 ? 3 : 0.7;
+          return Math.min(96, prev + increment);
         });
-      }, 150);
+      }, 120);
     } else {
       setFakeProgress(0);
       if (interval) clearInterval(interval);
@@ -207,6 +227,18 @@ export default function App() {
   }, [uploading, selectedTranscript?.status]);
 
   useEffect(() => {
+    completeGoogleRedirectSignIn().catch((error) => {
+      console.error("Google redirect sign-in failed:", error);
+      const code = (error as { code?: string })?.code;
+
+      if (code === 'auth/unauthorized-domain') {
+        setAuthError('Google Sign In is blocked because localhost is not authorized in Firebase Authentication settings.');
+        return;
+      }
+
+      setAuthError(error instanceof Error ? error.message : 'Google Sign In failed. Please try again.');
+    });
+
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
@@ -237,87 +269,97 @@ export default function App() {
 
   const handleFileUpload = async (file: File) => {
     if (!user) return;
+
+    setUploadError(null);
+
+    if (!file.type.startsWith('audio/') && !file.type.startsWith('video/')) {
+      setUploadError('Please upload an audio or video file.');
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError(`This file is ${formatFileSize(file.size)}. Please upload a file up to ${formatFileSize(MAX_UPLOAD_BYTES)} for 1-3 hour audio or video.`);
+      return;
+    }
+
     setUploading(true);
     setUploadProgress(0);
 
     try {
-      const reader = new FileReader();
-      
-      setUploadProgress(5); 
+      setUploadProgress(2);
 
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(',')[1];
-        setUploadProgress(10);
-        
-        // 1. Create Firestore record immediately
-        let docRef;
-        try {
-          docRef = await addDoc(collection(db, 'transcripts'), {
-            userId: user.uid,
-            fileName: file.name,
-            fileType: file.type,
-            fileUrl: "", 
-            status: 'processing',
-            processingStep: 'Preparing AI...',
-            createdAt: serverTimestamp()
-          });
-          
-          // Select immediately and update list optimistically so UI shows progress
-          const optimisticTranscript = {
-            id: docRef.id,
-            userId: user.uid,
-            fileName: file.name,
-            fileType: file.type,
-            fileUrl: "",
-            status: 'processing',
-            processingStep: 'Preparing AI...',
-            createdAt: { toDate: () => new Date() } // temporary mock
-          } as Transcript;
-          
-          setTranscripts(prev => [optimisticTranscript, ...prev]);
-          setSelectedTranscriptId(docRef.id);
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, 'transcripts');
-          return;
-        }
+      // 1. Create Firestore record immediately
+      let docRef;
+      try {
+        docRef = await addDoc(collection(db, 'transcripts'), {
+          userId: user.uid,
+          fileName: file.name,
+          fileType: file.type,
+          fileUrl: "",
+          status: 'processing',
+          processingStep: 'Preparing long media upload...',
+          createdAt: serverTimestamp()
+        });
 
-        // 2. Start AI Processing NOW in parallel
-        processFile(docRef.id, base64, file.type);
+        // Select immediately and update list optimistically so UI shows progress
+        const optimisticTranscript = {
+          id: docRef.id,
+          userId: user.uid,
+          fileName: file.name,
+          fileType: file.type,
+          fileUrl: "",
+          status: 'processing',
+          processingStep: 'Preparing long media upload...',
+          createdAt: { toDate: () => new Date() } // temporary mock
+        } as Transcript;
 
-        // 3. Storage upload in background
-        const storageRef = ref(storage, `users/${user.uid}/${Date.now()}_${file.name}`);
-        const uploadTask = uploadBytesResumable(storageRef, file);
+        setTranscripts(prev => [optimisticTranscript, ...prev]);
+        setSelectedTranscriptId(docRef.id);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, 'transcripts');
+        setUploading(false);
+        return;
+      }
 
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setUploadProgress(Math.round(progress));
-          },
-          (error) => {
-            console.warn("Storage upload failed:", error);
-            setUploading(false);
-          },
-          async () => {
-            const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-            try {
-              await updateDoc(doc(db, 'transcripts', docRef.id), {
-                fileUrl: downloadURL
-              });
-            } catch (error) {
-              handleFirestoreError(error, OperationType.UPDATE, `transcripts/${docRef.id}`);
-            }
-            setUploading(false);
+      // 2. Start AI Processing NOW in parallel without converting long media to base64
+      void processFile(docRef.id, file);
+
+      // 3. Storage upload in background
+      const storageRef = ref(storage, `users/${user.uid}/${Date.now()}_${file.name}`);
+      const uploadTask = uploadBytesResumable(storageRef, file);
+
+      uploadTask.on('state_changed',
+        (snapshot) => {
+          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+          setUploadProgress(Math.round(progress));
+        },
+        (error) => {
+          console.warn("Storage upload failed:", error);
+          setUploadError("Storage upload failed. Please check your connection and try again.");
+          setUploading(false);
+        },
+        async () => {
+          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          try {
+            await updateDoc(doc(db, 'transcripts', docRef.id), {
+              fileUrl: downloadURL
+            });
+          } catch (error) {
+            handleFirestoreError(error, OperationType.UPDATE, `transcripts/${docRef.id}`);
           }
-        );
-      };
+          setUploading(false);
+        }
+      );
     } catch (error) {
       console.error(error);
+      setUploadError("Upload failed. Please try a smaller or more compressed file.");
       setUploading(false);
     }
   };
 
-  const processFile = async (id: string, base64: string, fileType: string) => {
+  const processFile = async (id: string, file: File) => {
+    let stepInterval: ReturnType<typeof setInterval> | null = null;
+
     try {
       try {
         await updateDoc(doc(db, 'transcripts', id), {
@@ -326,6 +368,8 @@ export default function App() {
         
         // Faster UI updates to show life
         const steps = [
+          'Turbo AI: Uploading long media to Gemini...',
+          'Turbo AI: Preparing 1-3 hour media file...',
           'Turbo AI: Scanning voice frequencies...',
           'Turbo AI: Synchronizing neural networks...',
           'Turbo AI: Identifying speaker patterns...',
@@ -336,7 +380,7 @@ export default function App() {
         ];
         
         let stepIdx = 0;
-        const stepInterval = setInterval(async () => {
+        stepInterval = setInterval(async () => {
           if (stepIdx < steps.length) {
             try {
               await updateDoc(doc(db, 'transcripts', id), {
@@ -349,18 +393,44 @@ export default function App() {
           } else {
             clearInterval(stepInterval);
           }
-        }, 2200);
+        }, 900);
 
-        // AI Processing with timeout to prevent hanging UI
-        const aiProcessingPromise = processMediaAI(base64, fileType);
+        const formData = new FormData();
+        formData.append('media', file);
+        const userApiKey = localStorage.getItem('dg_gemini_api_key') || '';
+
+        if (isVercelRuntime && !userApiKey) {
+          throw new Error('On Vercel, paste your Personal Gemini API Key in Quick Config before uploading media.');
+        }
+
+        // Vercel serverless functions are not reliable for large media uploads.
+        // In production, users with a personal key upload directly to Gemini from the browser.
+        const aiProcessingPromise = isVercelRuntime
+          ? processMediaInBrowser(file, userApiKey)
+          : fetch('/api/transcribe', {
+              method: 'POST',
+              headers: userApiKey ? { 'X-Gemini-Api-Key': userApiKey } : undefined,
+              body: formData,
+            }).then(async response => {
+              const payload = await response.json().catch(() => ({}));
+
+              if (!response.ok) {
+                throw new Error(payload.error || 'AI transcription failed.');
+              }
+
+              return payload;
+            });
         
-        // Safety timeout: 120 seconds for long audio
+        // Safety timeout: long media can take a while to transcribe.
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("AI transformation took too long. Please check the dashboard later as processing might still be happening in the background.")), 120000)
+          setTimeout(() => reject(new Error("AI transformation took too long. Please try compressing the file or splitting it into smaller parts.")), AI_PROCESSING_TIMEOUT_MS)
         );
 
         const aiResult = (await Promise.race([aiProcessingPromise, timeoutPromise])) as any;
-        clearInterval(stepInterval);
+        if (stepInterval) {
+          clearInterval(stepInterval);
+          stepInterval = null;
+        }
 
         // Update local state optimistically
         setTranscripts(prev => prev.map(t => t.id === id ? {
@@ -388,11 +458,21 @@ export default function App() {
         handleFirestoreError(error, OperationType.UPDATE, `transcripts/${id}`);
       }
     } catch (error) {
+      if (stepInterval) {
+        clearInterval(stepInterval);
+      }
       console.error("AI Processing error:", error);
+      const errorMessage = error instanceof Error ? error.message : 'AI could not finish this long file.';
+      setTranscripts(prev => prev.map(t => t.id === id ? {
+        ...t,
+        status: 'failed',
+        processingStep: errorMessage,
+      } : t));
+      setUploading(false);
       try {
         await updateDoc(doc(db, 'transcripts', id), {
           status: 'failed',
-          processingStep: 'AI failed to process. Try a smaller file.',
+          processingStep: errorMessage,
           updatedAt: serverTimestamp()
         });
       } catch (e) {
@@ -422,18 +502,19 @@ export default function App() {
     }
   };
 
-  const handleTranslate = async (transcript: Transcript, lang: string) => {
+  const handleTranslate = async (transcript: Transcript, lang: string, forceRefresh = false) => {
     if (!transcript.text) return;
     
     // Check if translation already exists locally
     const existing = translations.find(t => t.targetLanguage === lang);
-    if (existing) {
+    if (existing && !forceRefresh) {
       setViewLanguage(lang);
       return;
     }
 
     setTranslating(true);
     try {
+      setUploadError(null);
       setViewLanguage(lang);
       const res = await translateText(transcript.text, lang);
       try {
@@ -449,6 +530,7 @@ export default function App() {
       }
     } catch (error) {
       console.error(error);
+      setUploadError(error instanceof Error ? error.message : 'Translation failed. Please try again.');
     } finally {
       setTranslating(false);
     }
@@ -458,6 +540,7 @@ export default function App() {
     if (!transcript.text) return;
     setSummarizing(true);
     try {
+      setUploadError(null);
       const result = await summarizeTranscript(transcript.text, transcript.language || "original", instruction);
       try {
         await updateDoc(doc(db, 'transcripts', transcript.id), {
@@ -472,6 +555,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Resummarize failed:", error);
+      setUploadError(error instanceof Error ? error.message : 'Summary failed. Please try again.');
     } finally {
       setSummarizing(false);
     }
@@ -513,6 +597,42 @@ export default function App() {
     }
   };
 
+  const handleSignIn = async () => {
+    setAuthError(null);
+
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      console.error("Google sign-in failed:", error);
+      const code = (error as { code?: string })?.code;
+
+      if (code === 'auth/unauthorized-domain') {
+        setAuthError('Google Sign In is blocked because localhost:3001 is not authorized in Firebase Authentication settings.');
+        return;
+      }
+
+      if (code === 'auth/popup-closed-by-user') {
+        setAuthError('The Google sign-in window was closed before login finished. Please try again.');
+        return;
+      }
+
+      setAuthError(error instanceof Error ? error.message : 'Google Sign In failed. Please try again.');
+    }
+  };
+
+  const handleSaveGeminiApiKey = () => {
+    const key = userGeminiApiKey.trim();
+
+    if (key) {
+      localStorage.setItem('dg_gemini_api_key', key);
+      setUploadError('Gemini API key saved for this browser. Upload again to use your own quota.');
+      return;
+    }
+
+    localStorage.removeItem('dg_gemini_api_key');
+    setUploadError('Personal Gemini API key cleared. The app will use the server key pool.');
+  };
+
   if (loading) return (
     <div className="min-h-screen bg-[#09090B] flex items-center justify-center">
       <Sparkles className="w-12 h-12 text-indigo-500 animate-pulse" />
@@ -530,7 +650,7 @@ export default function App() {
               </div>
               <span className="text-xl font-bold tracking-tight text-white">DG Transcribe <span className="text-indigo-400">AI</span></span>
             </div>
-            <Button size="sm" onClick={signInWithGoogle}>Sign In</Button>
+            <Button size="sm" onClick={handleSignIn}>Sign In</Button>
           </div>
         </nav>
 
@@ -552,11 +672,17 @@ export default function App() {
                 Experience high-fidelity transcription powered by Gemini 1.5 Flash. Summarize meetings, extract action items, and translate instantly.
               </p>
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
-                <Button size="lg" onClick={signInWithGoogle} className="group">
+                <Button size="lg" onClick={handleSignIn} className="group">
                   Start Transcribing <ChevronRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
                 </Button>
                 <Button variant="secondary" size="lg">Watch Demo</Button>
               </div>
+              {authError && (
+                <div className="max-w-xl mx-auto rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm font-medium text-red-200 flex items-start gap-3 text-left">
+                  <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                  <span>{authError}</span>
+                </div>
+              )}
 
               {/* Visual Mockup */}
               <div className="mt-24 relative max-w-5xl mx-auto">
@@ -711,6 +837,7 @@ export default function App() {
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) handleFileUpload(file);
+                e.currentTarget.value = '';
               }}
             />
             <label htmlFor="file-upload">
@@ -724,6 +851,13 @@ export default function App() {
 
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-8 bg-gradient-to-b from-[#09090B] to-[#0D0D0F]">
+          {uploadError && (
+            <div className="max-w-8xl mx-auto mb-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm font-medium text-red-200 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+              <span>{uploadError}</span>
+            </div>
+          )}
+
           <div className="max-w-8xl mx-auto mb-8">
             <motion.div 
               initial={{ opacity: 0, y: -10 }}
@@ -751,6 +885,22 @@ export default function App() {
                      <div className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 flex justify-between items-center text-sm group cursor-pointer hover:border-slate-700 transition-colors">
                        <span className="text-slate-400 group-hover:text-slate-200">Khmer (Cambodia)</span>
                        <ChevronRight className="w-4 h-4 text-slate-700" />
+                     </div>
+                   </div>
+
+                   <div>
+                     <label className="text-[10px] uppercase tracking-widest text-slate-600 font-bold block mb-2 px-1">Personal Gemini API Key</label>
+                     <div className="flex gap-2">
+                       <input
+                         type="password"
+                         value={userGeminiApiKey}
+                         onChange={(e) => setUserGeminiApiKey(e.target.value)}
+                         placeholder="Paste your own key"
+                         className="min-w-0 flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder:text-slate-700 focus:border-indigo-500/50 outline-none transition-all"
+                       />
+                       <Button variant="secondary" size="sm" onClick={handleSaveGeminiApiKey}>
+                         Save
+                       </Button>
                      </div>
                    </div>
                    
@@ -781,14 +931,43 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2 text-[9px] uppercase font-bold tracking-wider text-slate-600 bg-slate-950/40 p-2 rounded-lg border border-slate-800/50">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" />
-                    Cloud Storage Synced
+                    Up to 2GB / 1-3 Hour Media
                   </div>
                </div>
             </div>
 
             {/* Right: Output */}
             <div className="col-span-12 lg:col-span-8">
-               {(uploading || (selectedTranscript && selectedTranscript.status === 'processing')) && selectedTranscript?.status !== 'completed' ? (
+               {selectedTranscript?.status === 'failed' ? (
+                 <GlassCard className="overflow-hidden border-red-500/30 flex flex-col min-h-[420px]">
+                    <div className="p-8 flex items-center gap-6 border-b border-slate-800 bg-red-950/10">
+                       <div className="w-14 h-14 bg-red-500/10 rounded-xl flex items-center justify-center border border-red-500/30 text-red-400">
+                         <AlertCircle className="w-7 h-7" />
+                       </div>
+                       <div className="flex-1">
+                          <h2 className="text-sm font-bold text-white uppercase tracking-tight mb-2">
+                            {selectedTranscript.fileName}
+                          </h2>
+                          <p className="text-[11px] text-red-300 font-bold uppercase tracking-widest">
+                            Transcription stopped
+                          </p>
+                       </div>
+                    </div>
+                    <div className="flex-1 p-8 bg-slate-900/60 flex flex-col items-center justify-center text-center space-y-5">
+                       <AlertCircle className="w-12 h-12 text-red-400" />
+                       <div className="max-w-lg">
+                          <p className="text-sm font-bold text-white mb-2">{selectedTranscript.processingStep || 'AI could not finish this file.'}</p>
+                          <p className="text-xs text-slate-500 leading-relaxed font-medium">
+                            Try uploading a compressed audio file, or split very long media into smaller parts for faster transcription.
+                          </p>
+                       </div>
+                       <label htmlFor="file-upload" className="cursor-pointer inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest shadow-lg shadow-indigo-500/20 hover:bg-indigo-700 transition-colors active:scale-95">
+                         <Upload className="w-4 h-4" />
+                         Upload Again
+                       </label>
+                    </div>
+                 </GlassCard>
+               ) : (uploading || (selectedTranscript && selectedTranscript.status === 'processing')) && selectedTranscript?.status !== 'completed' ? (
                  <GlassCard className="overflow-hidden border-indigo-500/30 flex flex-col min-h-[500px]">
                     <div className="p-8 flex items-center gap-6 border-b border-slate-800 bg-slate-950/40">
                        <div className="w-14 h-14 bg-indigo-500/20 rounded-xl flex items-center justify-center border border-indigo-500/30 text-indigo-400 font-mono font-bold animate-pulse">
@@ -817,7 +996,7 @@ export default function App() {
                        <div className="max-w-xs">
                           <p className="text-sm font-bold text-white mb-2 animate-pulse">{selectedTranscript?.processingStep || (uploading ? "Uploading to secure cloud..." : "AI Transformation Active...")}</p>
                           <p className="text-xs text-slate-500 leading-relaxed font-medium">
-                            {fakeProgress > 98 ? "AI is applying final semantic polishing. Please wait a few seconds..." : "សួស្ដី តើយើងគួរចាប់ផ្ដើមពីណា?"}
+                            {fakeProgress > 95 ? "Fast mode is waiting for Gemini to return the final transcript." : "Server-side fast mode is active for long audio and video transcription."}
                           </p>
                        </div>
                     </div>
@@ -867,6 +1046,15 @@ export default function App() {
                                     className="text-[9px] bg-slate-950 px-2 py-0.5 rounded text-indigo-400 border border-indigo-500/20 font-bold hover:bg-slate-800 transition-colors"
                                   >
                                     Show Verbatim
+                                  </button>
+                                )}
+                                {viewLanguage !== 'original' && (
+                                  <button
+                                    disabled={translating}
+                                    onClick={() => handleTranslate(selectedTranscript, viewLanguage, true)}
+                                    className="text-[9px] bg-slate-950 px-2 py-0.5 rounded text-indigo-400 border border-indigo-500/20 font-bold hover:bg-slate-800 transition-colors disabled:opacity-50"
+                                  >
+                                    Retranslate
                                   </button>
                                 )}
                                 <span className="text-[9px] bg-slate-950 px-2 py-0.5 rounded text-indigo-400 border border-indigo-500/20 font-bold">
