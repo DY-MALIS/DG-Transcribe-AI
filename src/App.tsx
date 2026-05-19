@@ -370,7 +370,12 @@ export default function App() {
       });
     } catch (error) {
       console.error(error);
-      setUploadError(error instanceof Error ? error.message : "Upload failed. Please try a smaller or more compressed file.");
+      const code = (error as { code?: string })?.code;
+      if (code === 'storage/retry-limit-exceeded') {
+        setUploadError("Firebase Storage upload timed out. I increased the upload retry window; please refresh after deployment and try again on a stable connection.");
+      } else {
+        setUploadError(error instanceof Error ? error.message : "Upload failed. Please try a smaller or more compressed file.");
+      }
       setUploading(false);
     }
   };
