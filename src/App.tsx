@@ -30,12 +30,11 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query, where, orderBy, onSnapshot, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, getDocs } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { cn, formatDuration, formatDate } from './lib/utils';
-import { processMediaInBrowser, translateText, summarizeTranscript } from './services/gemini';
+import { translateText, summarizeTranscript } from './services/gemini';
 import Markdown from 'react-markdown';
 
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024; // Supports long compressed audio/video uploads without browser base64 conversion.
 const AI_PROCESSING_TIMEOUT_MS = 60 * 60 * 1000;
-const isVercelRuntime = window.location.hostname.endsWith('.vercel.app');
 
 const formatFileSize = (bytes: number) => {
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -184,7 +183,6 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [viewLanguage, setViewLanguage] = useState<string>('original');
   const [agentInstruction, setAgentInstruction] = useState('');
-  const [userGeminiApiKey, setUserGeminiApiKey] = useState(() => localStorage.getItem('dg_gemini_api_key') || '');
 
   useEffect(() => {
     if (!selectedTranscript) {
@@ -271,7 +269,6 @@ export default function App() {
     if (!user) return;
 
     setUploadError(null);
-    const userApiKey = localStorage.getItem('dg_gemini_api_key') || '';
 
     if (!file.type.startsWith('audio/') && !file.type.startsWith('video/')) {
       setUploadError('Please upload an audio or video file.');
@@ -398,25 +395,19 @@ export default function App() {
 
         const formData = new FormData();
         formData.append('media', file);
-        const userApiKey = localStorage.getItem('dg_gemini_api_key') || '';
 
-        // Vercel serverless functions are not reliable for large media uploads.
-        // In production, users with a personal key upload directly to Gemini from the browser.
-        const aiProcessingPromise = isVercelRuntime && userApiKey
-          ? processMediaInBrowser(file, userApiKey)
-          : fetch('/api/transcribe', {
-              method: 'POST',
-              headers: userApiKey ? { 'X-Gemini-Api-Key': userApiKey } : undefined,
-              body: formData,
-            }).then(async response => {
-              const payload = await response.json().catch(() => ({}));
+        const aiProcessingPromise = fetch('/api/transcribe', {
+          method: 'POST',
+          body: formData,
+        }).then(async response => {
+          const payload = await response.json().catch(() => ({}));
 
-              if (!response.ok) {
-                throw new Error(payload.error || 'AI transcription failed.');
-              }
+          if (!response.ok) {
+            throw new Error(payload.error || 'AI transcription failed.');
+          }
 
-              return payload;
-            });
+          return payload;
+        });
         
         // Safety timeout: long media can take a while to transcribe.
         const timeoutPromise = new Promise((_, reject) => 
@@ -615,19 +606,6 @@ export default function App() {
 
       setAuthError(error instanceof Error ? error.message : 'Google Sign In failed. Please try again.');
     }
-  };
-
-  const handleSaveGeminiApiKey = () => {
-    const key = userGeminiApiKey.trim();
-
-    if (key) {
-      localStorage.setItem('dg_gemini_api_key', key);
-      setUploadError('Gemini API key saved for this browser. Upload again to use your own quota.');
-      return;
-    }
-
-    localStorage.removeItem('dg_gemini_api_key');
-    setUploadError('Personal Gemini API key cleared. The app will use the server key pool.');
   };
 
   if (loading) return (
@@ -885,22 +863,6 @@ export default function App() {
                      </div>
                    </div>
 
-                   <div>
-                     <label className="text-[10px] uppercase tracking-widest text-slate-600 font-bold block mb-2 px-1">Personal Gemini API Key</label>
-                     <div className="flex gap-2">
-                       <input
-                         type="password"
-                         value={userGeminiApiKey}
-                         onChange={(e) => setUserGeminiApiKey(e.target.value)}
-                         placeholder="Paste your own key"
-                         className="min-w-0 flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder:text-slate-700 focus:border-indigo-500/50 outline-none transition-all"
-                       />
-                       <Button variant="secondary" size="sm" onClick={handleSaveGeminiApiKey}>
-                         Save
-                       </Button>
-                     </div>
-                   </div>
-                   
                    <div className="pt-2">
                       <Button variant="secondary" className="w-full justify-between group" size="sm">
                         Smart Meeting Notes
