@@ -6,7 +6,7 @@ import { createRequire } from "module";
 import fs from "fs";
 import os from "os";
 import PDFDocument from "pdfkit";
-import { GoogleGenAI, Type, ThinkingLevel, createPartFromUri, FileState } from "@google/genai";
+import { GoogleGenAI, Type, createPartFromUri, FileState } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -139,7 +139,6 @@ async function transcribeWithModelFallback(client: GoogleGenAI, readyFileUri: st
         ],
         config: {
           responseMimeType: "application/json",
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -221,7 +220,6 @@ async function summarizeText(client: GoogleGenAI, transcript: string, language: 
     Return JSON only: {summary, points, takeaways}.`,
     config: {
       responseMimeType: "application/json",
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
       responseSchema: {
         type: Type.OBJECT,
         properties: {
