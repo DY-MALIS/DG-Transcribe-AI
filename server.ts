@@ -68,6 +68,17 @@ function isRetryableGeminiError(error: unknown) {
     message.includes("deadline");
 }
 
+function canTryNextGeminiModel(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+  return isRetryableGeminiError(error) ||
+    message.includes("not found") ||
+    message.includes("not supported") ||
+    message.includes("unsupported") ||
+    message.includes("invalid argument") ||
+    message.includes("model");
+}
+
 async function withGeminiRetry<T>(operation: () => Promise<T>, attempts = 4): Promise<T> {
   let lastError: unknown;
 
@@ -102,7 +113,7 @@ async function generateWithModelFallback(client: GoogleGenAI, requestFactory: (m
     } catch (error) {
       lastError = error;
 
-      if (!isRetryableGeminiError(error)) {
+      if (!canTryNextGeminiModel(error)) {
         throw error;
       }
     }
@@ -156,7 +167,7 @@ async function transcribeWithModelFallback(client: GoogleGenAI, readyFileUri: st
     } catch (error) {
       lastError = error;
 
-      if (!isRetryableGeminiError(error)) {
+      if (!canTryNextGeminiModel(error)) {
         throw error;
       }
     }
@@ -336,7 +347,7 @@ async function createAgentImage(client: GoogleGenAI, prompt: string) {
       throw new Error("Gemini did not return an image.");
     } catch (error) {
       lastError = error;
-      if (!isRetryableGeminiError(error)) {
+      if (!canTryNextGeminiModel(error)) {
         throw error;
       }
     }
@@ -390,6 +401,10 @@ function getClientSafeErrorMessage(error: unknown) {
   }
 
   return "AI transcription failed. Please try a compressed file, or check the Gemini API key and quota.";
+}
+
+export function toClientSafeErrorMessage(error: unknown) {
+  return getClientSafeErrorMessage(error);
 }
 
 export async function createApp(options: { includeVite?: boolean } = {}) {

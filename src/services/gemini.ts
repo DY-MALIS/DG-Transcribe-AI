@@ -4,10 +4,17 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const payload = await response.json().catch(() => ({}));
+  const responseText = await response.text();
+  let payload: any = {};
+
+  try {
+    payload = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    payload = { error: responseText };
+  }
 
   if (!response.ok) {
-    throw new Error(payload.error || 'AI request failed.');
+    throw new Error(payload.error || `AI request failed with status ${response.status}.`);
   }
 
   return payload as T;
