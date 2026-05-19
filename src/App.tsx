@@ -282,7 +282,7 @@ export default function App() {
     }
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      setUploadError(`This file is ${formatFileSize(file.size)}. Please upload a file up to ${formatFileSize(MAX_UPLOAD_BYTES)} for 1-3 hour audio or video.`);
+      setUploadError(`This file is ${formatFileSize(file.size)}. Please upload a compressed audio or video file up to ${formatFileSize(MAX_UPLOAD_BYTES)}.`);
       return;
     }
 
@@ -301,7 +301,7 @@ export default function App() {
           fileType: file.type,
           fileUrl: "",
           status: 'processing',
-          processingStep: 'Preparing long media upload...',
+          processingStep: 'Preparing cloud media upload...',
           createdAt: serverTimestamp()
         });
 
@@ -313,7 +313,7 @@ export default function App() {
           fileType: file.type,
           fileUrl: "",
           status: 'processing',
-          processingStep: 'Preparing long media upload...',
+          processingStep: 'Preparing cloud media upload...',
           createdAt: { toDate: () => new Date() } // temporary mock
         } as Transcript;
 
@@ -325,43 +325,60 @@ export default function App() {
         return;
       }
 
-      // 2. Start AI Processing NOW in parallel without converting long media to base64
-      void processFile(docRef.id, file);
-
-      // 3. Storage upload in background
+      // 2. Upload to Firebase Storage first so Vercel only receives a small JSON request.
       const storageRef = ref(storage, `users/${user.uid}/${Date.now()}_${file.name}`);
-      const uploadTask = uploadBytesResumable(storageRef, file);
+      const downloadURL = await new Promise<string>((resolve, reject) => {
+        const uploadTask = uploadBytesResumable(storageRef, file);
 
-      uploadTask.on('state_changed',
-        (snapshot) => {
-          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(Math.round(progress));
-        },
-        (error) => {
-          console.warn("Storage upload failed:", error);
-          setUploadError("Storage upload failed. Please check your connection and try again.");
-          setUploading(false);
-        },
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          try {
-            await updateDoc(doc(db, 'transcripts', docRef.id), {
-              fileUrl: downloadURL
-            });
-          } catch (error) {
-            handleFirestoreError(error, OperationType.UPDATE, `transcripts/${docRef.id}`);
+        uploadTask.on('state_changed',
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setUploadProgress(Math.max(2, Math.round(progress)));
+          },
+          reject,
+          async () => {
+            try {
+              resolve(await getDownloadURL(uploadTask.snapshot.ref));
+            } catch (error) {
+              reject(error);
+            }
           }
-          setUploading(false);
-        }
-      );
+        );
+      });
+
+      try {
+        await updateDoc(doc(db, 'transcripts', docRef.id), {
+          fileUrl: downloadURL,
+          processingStep: 'Cloud upload complete. Sending URL to Gemini...'
+        });
+        setTranscripts(prev => prev.map(t => t.id === docRef.id ? {
+          ...t,
+          fileUrl: downloadURL,
+          processingStep: 'Cloud upload complete. Sending URL to Gemini...'
+        } : t));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `transcripts/${docRef.id}`);
+      }
+
+      setUploading(false);
+
+      // 3. Start AI processing from cloud URL. This avoids Vercel binary upload limits.
+      void processFile(docRef.id, {
+        fileUrl: downloadURL,
+        fileName: file.name,
+        fileType: file.type,
+      });
     } catch (error) {
       console.error(error);
-      setUploadError("Upload failed. Please try a smaller or more compressed file.");
+      setUploadError(error instanceof Error ? error.message : "Upload failed. Please try a smaller or more compressed file.");
       setUploading(false);
     }
   };
 
-  const processFile = async (id: string, file: File) => {
+  const processFile = async (
+    id: string,
+    media: { fileUrl: string; fileName: string; fileType: string }
+  ) => {
     let stepInterval: ReturnType<typeof setInterval> | null = null;
 
     try {
@@ -372,8 +389,8 @@ export default function App() {
         
         // Faster UI updates to show life
         const steps = [
-          'Turbo AI: Uploading long media to Gemini...',
-          'Turbo AI: Preparing 1-3 hour media file...',
+          'Turbo AI: Registering cloud media URL...',
+          'Turbo AI: Preparing compressed media file...',
           'Turbo AI: Scanning voice frequencies...',
           'Turbo AI: Synchronizing neural networks...',
           'Turbo AI: Identifying speaker patterns...',
@@ -399,12 +416,12 @@ export default function App() {
           }
         }, 900);
 
-        const formData = new FormData();
-        formData.append('media', file);
-
         const aiProcessingPromise = fetch('/api/transcribe', {
           method: 'POST',
-          body: formData,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(media),
         }).then(async response => {
           const payload = await response.json().catch(() => ({}));
 
@@ -979,7 +996,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2 text-[9px] uppercase font-bold tracking-wider text-slate-600 bg-slate-950/40 p-2 rounded-lg border border-slate-800/50">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" />
-                    Up to 2GB / 1-3 Hour Media
+                    Best with compressed audio/video
                   </div>
                </div>
             </div>

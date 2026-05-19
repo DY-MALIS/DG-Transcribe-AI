@@ -207,6 +207,20 @@ async function transcribeMedia(client: GoogleGenAI, filePath: string, originalNa
   return JSON.parse(response.text);
 }
 
+async function transcribeMediaUrl(client: GoogleGenAI, fileUrl: string, originalName: string, mimeType: string) {
+  if (!fileUrl.startsWith("https://")) {
+    throw new Error("Media URL must be an HTTPS URL.");
+  }
+
+  const response = await transcribeWithModelFallback(client, fileUrl, mimeType);
+
+  if (!response.text) {
+    throw new Error(`No transcription response from Gemini for ${originalName}`);
+  }
+
+  return JSON.parse(response.text);
+}
+
 async function summarizeText(client: GoogleGenAI, transcript: string, language: string = "original", customInstruction: string = "") {
   const response = await generateWithModelFallback(client, (model) => ({
     model,
@@ -297,7 +311,11 @@ function getClientSafeErrorMessage(error: unknown) {
   }
 
   if (lowerMessage.includes("too large") || lowerMessage.includes("payload") || lowerMessage.includes("file size")) {
-    return "This file is too large for the current AI request. Please compress it or split it into shorter parts.";
+    return "This file is too large for the current AI request. The app now uploads media through cloud storage first, but Gemini may still require a compressed or shorter file.";
+  }
+
+  if (lowerMessage.includes("413") || lowerMessage.includes("function_payload_too_large") || lowerMessage.includes("body size")) {
+    return "The upload was too large for a Vercel Function. Please refresh and upload again so the app can use cloud-storage upload mode.";
   }
 
   if (lowerMessage.includes("deadline") || lowerMessage.includes("timeout") || lowerMessage.includes("timed out")) {
@@ -322,20 +340,38 @@ export async function createApp(options: { includeVite?: boolean } = {}) {
     res.json({ status: "ok" });
   });
 
-  app.post("/api/transcribe", mediaUpload.single("media"), async (req, res) => {
-    const file = (req as express.Request & {
-      file?: {
-        path: string;
-        originalname: string;
-        mimetype: string;
-      };
-    }).file;
-
-    if (!file) {
-      return res.status(400).json({ error: "Media file is required." });
-    }
-
+  app.post("/api/transcribe", async (req, res) => {
     try {
+      const { fileUrl, fileName, fileType } = req.body || {};
+      if (fileUrl && fileName && fileType) {
+        const result = await transcribeMediaUrl(
+          getGeminiClient(getRequestGeminiKey(req)),
+          String(fileUrl),
+          String(fileName),
+          String(fileType)
+        );
+        return res.json(result);
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        mediaUpload.single("media")(req, res, (error: unknown) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+
+      const file = (req as express.Request & {
+        file?: {
+          path: string;
+          originalname: string;
+          mimetype: string;
+        };
+      }).file;
+
+      if (!file) {
+        return res.status(400).json({ error: "Media file URL or media upload is required." });
+      }
+
       const result = await transcribeMedia(getGeminiClient(getRequestGeminiKey(req)), file.path, file.originalname, file.mimetype);
       res.json(result);
     } catch (error) {
@@ -344,7 +380,10 @@ export async function createApp(options: { includeVite?: boolean } = {}) {
         error: getClientSafeErrorMessage(error),
       });
     } finally {
-      fs.promises.unlink(file.path).catch(() => {});
+      const file = (req as express.Request & { file?: { path: string } }).file;
+      if (file?.path) {
+        fs.promises.unlink(file.path).catch(() => {});
+      }
     }
   });
 
