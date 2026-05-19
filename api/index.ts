@@ -1,10 +1,22 @@
-import { createApp, toClientSafeErrorMessage } from "../server.ts";
+let appPromise: Promise<any> | null = null;
 
-let appPromise: ReturnType<typeof createApp> | null = null;
+function toClientSafeErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.includes("Missing GEMINI_API_KEY")) {
+    return message;
+  }
+
+  if (message.includes("Cannot find module") || message.includes("ERR_MODULE_NOT_FOUND")) {
+    return `Vercel API module failed to load: ${message}`;
+  }
+
+  return message || "Vercel API failed to start.";
+}
 
 function getApp() {
   if (!appPromise) {
-    appPromise = createApp({ includeVite: false });
+    appPromise = import("../server.ts").then(mod => mod.createApp({ includeVite: false }));
   }
 
   return appPromise;
