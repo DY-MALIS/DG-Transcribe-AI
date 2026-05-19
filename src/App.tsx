@@ -14,7 +14,6 @@ import {
   FileText,
   Languages,
   Download,
-  Share2,
   Play,
   Pause,
   ChevronRight,
@@ -23,19 +22,21 @@ import {
   X,
   Sparkles,
   Zap,
-  Trash2
+  Trash2,
+  Bot,
+  Send,
+  Image as ImageIcon
 } from 'lucide-react';
 import { auth, completeGoogleRedirectSignIn, db, signInWithGoogle, logout, storage } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query, where, orderBy, onSnapshot, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, getDocs } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { cn, formatDuration, formatDate } from './lib/utils';
-import { translateText, summarizeTranscript } from './services/gemini';
+import { translateText, summarizeTranscript, askAgent, createAgentImage, AgentHistoryItem } from './services/gemini';
 import Markdown from 'react-markdown';
 
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024; // Supports long compressed audio/video uploads without browser base64 conversion.
 const AI_PROCESSING_TIMEOUT_MS = 60 * 60 * 1000;
-const JITSI_DOMAIN = 'meet.jit.si';
 
 const formatFileSize = (bytes: number) => {
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -49,8 +50,6 @@ const formatFileSize = (bytes: number) => {
 
   return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 };
-
-const makeSafeRoomName = (value: string) => value.replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 64);
 
 // --- Error Handling ---
 enum OperationType {
@@ -105,7 +104,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 // --- Types ---
-type Page = 'landing' | 'dashboard' | 'transcript' | 'settings' | 'video';
+type Page = 'landing' | 'dashboard' | 'transcript' | 'settings' | 'agent';
 
 interface Transcript {
   id: string;
@@ -123,6 +122,13 @@ interface Transcript {
   processingStep?: string;
   createdAt: any;
   updatedAt?: any;
+}
+
+interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  imageUrl?: string;
 }
 
 // --- Components ---
@@ -186,9 +192,15 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [viewLanguage, setViewLanguage] = useState<string>('original');
   const [agentInstruction, setAgentInstruction] = useState('');
-  const [videoRoomName, setVideoRoomName] = useState('dg-transcribe-live-room');
-  const safeVideoRoomName = makeSafeRoomName(videoRoomName || 'dg-transcribe-live-room');
-  const videoMeetingUrl = `https://${JITSI_DOMAIN}/${safeVideoRoomName}`;
+  const [agentPrompt, setAgentPrompt] = useState('');
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([
+    {
+      id: 'welcome',
+      role: 'assistant',
+      content: 'សួស្តី! ខ្ញុំជា DG Agent។ អ្នកអាចសួរខ្ញុំ ឬសរសេរ prompt ដើម្បីបង្កើតរូបភាពបាន។',
+    },
+  ]);
 
   useEffect(() => {
     if (!selectedTranscript) {
@@ -636,13 +648,53 @@ export default function App() {
     }
   };
 
-  const handleCopyMeetingLink = async () => {
+  const handleAgentSubmit = async (mode: 'chat' | 'image') => {
+    const prompt = agentPrompt.trim();
+    if (!prompt || agentLoading) return;
+
+    const userMessage: AgentMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: prompt,
+    };
+    const history: AgentHistoryItem[] = agentMessages.map(message => ({
+      role: message.role,
+      content: message.content,
+    }));
+
+    setAgentMessages(prev => [...prev, userMessage]);
+    setAgentPrompt('');
+    setAgentLoading(true);
+    setUploadError(null);
+
     try {
-      await navigator.clipboard.writeText(videoMeetingUrl);
-      setUploadError('Video call link copied. Share it with up to 20 participants.');
+      if (mode === 'image') {
+        const result = await createAgentImage(prompt, history);
+        setAgentMessages(prev => [...prev, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: result.text || 'Image created.',
+          imageUrl: result.imageUrl,
+        }]);
+        return;
+      }
+
+      const result = await askAgent(prompt, history);
+      setAgentMessages(prev => [...prev, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: result.text,
+      }]);
     } catch (error) {
-      console.error("Copy meeting link failed:", error);
-      setUploadError(videoMeetingUrl);
+      console.error("Agent failed:", error);
+      const message = error instanceof Error ? error.message : 'Agent request failed. Please try again.';
+      setAgentMessages(prev => [...prev, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: message,
+      }]);
+    } finally {
+      setAgentLoading(false);
     }
   };
 
@@ -757,18 +809,18 @@ export default function App() {
           </button>
           <button
             onClick={() => {
-              setCurrentPage('video');
+              setCurrentPage('agent');
               setSelectedTranscriptId(null);
             }}
             className={cn(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg border font-medium text-sm text-left transition-colors",
-              currentPage === 'video'
+              currentPage === 'agent'
                 ? "bg-indigo-600/10 text-indigo-400 border-indigo-500/20"
                 : "text-slate-400 border-transparent hover:bg-slate-800/50 hover:text-slate-200"
             )}
           >
-            <FileVideo className="w-4 h-4" />
-            Video Call
+            <Bot className="w-4 h-4" />
+            AI Agent
           </button>
           
           <div className="mt-8">
@@ -855,7 +907,7 @@ export default function App() {
               </button>
             )}
             <span className="text-slate-500 uppercase tracking-widest font-bold flex items-center gap-2">
-              {currentPage === 'video' ? 'Video Call' : 'Dashboard'}
+              {currentPage === 'agent' ? 'AI Agent' : 'Dashboard'}
               <span className="flex items-center gap-1 bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded text-[8px] animate-pulse">
                 <Zap className="w-2.5 h-2.5 fill-green-500" />
                 HIGH-SPEED AI
@@ -897,49 +949,108 @@ export default function App() {
             </div>
           )}
 
-          {currentPage === 'video' ? (
+          {currentPage === 'agent' ? (
             <div className="max-w-8xl mx-auto space-y-6">
               <motion.div
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="flex flex-col gap-1"
               >
-                <h1 className="text-2xl font-bold text-white">Video Call</h1>
-                <p className="text-slate-400 text-sm">Create a room and share the link with 10 to 20 participants.</p>
+                <h1 className="text-2xl font-bold text-white">AI Agent</h1>
+                <p className="text-slate-400 text-sm">Ask questions, write content, or create images with Gemini.</p>
               </motion.div>
 
-              <GlassCard className="p-6 space-y-5">
-                <div className="flex flex-col lg:flex-row gap-4 lg:items-end">
-                  <div className="flex-1">
-                    <label className="text-[10px] uppercase tracking-widest text-slate-600 font-bold block mb-2 px-1">Room Name</label>
-                    <input
-                      type="text"
-                      value={videoRoomName}
-                      onChange={(e) => setVideoRoomName(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder:text-slate-700 focus:border-indigo-500/60 outline-none transition-colors"
-                      placeholder="dg-transcribe-live-room"
-                    />
+              <GlassCard className="overflow-hidden flex flex-col min-h-[70vh]">
+                <div className="p-6 border-b border-slate-800 bg-slate-950/40 flex items-center gap-4">
+                  <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center border border-indigo-500/30 text-indigo-300">
+                    <Bot className="w-6 h-6" />
                   </div>
-                  <Button variant="secondary" onClick={handleCopyMeetingLink}>
-                    <Share2 className="w-4 h-4 mr-2" />
-                    Copy Link
-                  </Button>
-                  <Button onClick={() => window.open(videoMeetingUrl, '_blank', 'noopener,noreferrer')}>
-                    <FileVideo className="w-4 h-4 mr-2" />
-                    Open Room
-                  </Button>
+                  <div>
+                    <h2 className="text-sm font-bold text-white uppercase tracking-tight">DG Agent</h2>
+                    <p className="text-xs text-slate-500">Chat answers and image creation powered by the server Gemini key.</p>
+                  </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-xs text-slate-400 break-all">
-                  {videoMeetingUrl}
+                <div className="flex-1 p-6 space-y-4 overflow-y-auto bg-slate-900/30">
+                  {agentMessages.map(message => (
+                    <div
+                      key={message.id}
+                      className={cn(
+                        "flex gap-3",
+                        message.role === 'user' ? "justify-end" : "justify-start"
+                      )}
+                    >
+                      {message.role === 'assistant' && (
+                        <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-300 shrink-0">
+                          <Bot className="w-4 h-4" />
+                        </div>
+                      )}
+                      <div
+                        className={cn(
+                          "max-w-3xl rounded-2xl border px-4 py-3 text-sm leading-relaxed",
+                          message.role === 'user'
+                            ? "bg-indigo-600 text-white border-indigo-500"
+                            : "bg-slate-950/70 text-slate-200 border-slate-800"
+                        )}
+                      >
+                        <Markdown>{message.content}</Markdown>
+                        {message.imageUrl && (
+                          <img
+                            src={message.imageUrl}
+                            alt={message.content}
+                            className="mt-4 max-h-[520px] w-full rounded-xl border border-slate-800 object-contain bg-slate-950"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {agentLoading && (
+                    <div className="flex items-center gap-3 text-xs text-slate-500">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-300">
+                        <Sparkles className="w-4 h-4 animate-pulse" />
+                      </div>
+                      Agent is thinking...
+                    </div>
+                  )}
                 </div>
 
-                <iframe
-                  title="DG Transcribe Video Call"
-                  src={`${videoMeetingUrl}#config.prejoinPageEnabled=true&config.disableDeepLinking=true&interfaceConfig.SHOW_JITSI_WATERMARK=false`}
-                  allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
-                  className="w-full h-[70vh] min-h-[520px] rounded-2xl border border-slate-800 bg-slate-950"
-                />
+                <div className="p-4 border-t border-slate-800 bg-slate-950/50">
+                  <div className="flex flex-col gap-3">
+                    <textarea
+                      value={agentPrompt}
+                      onChange={(e) => setAgentPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAgentSubmit('chat');
+                        }
+                      }}
+                      placeholder="Ask the agent, or describe an image you want..."
+                      className="min-h-[96px] w-full resize-none rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-700 outline-none transition-colors focus:border-indigo-500/60"
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[10px] uppercase tracking-widest text-slate-600 font-bold">Enter to ask, Shift + Enter for new line</p>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          disabled={agentLoading || !agentPrompt.trim()}
+                          onClick={() => handleAgentSubmit('image')}
+                        >
+                          <ImageIcon className="w-4 h-4 mr-2" />
+                          Create Image
+                        </Button>
+                        <Button
+                          disabled={agentLoading || !agentPrompt.trim()}
+                          onClick={() => handleAgentSubmit('chat')}
+                        >
+                          <Send className="w-4 h-4 mr-2" />
+                          Ask Agent
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </GlassCard>
             </div>
           ) : (

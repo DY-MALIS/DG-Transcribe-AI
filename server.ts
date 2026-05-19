@@ -53,6 +53,7 @@ function getGeminiClient(apiKey?: string) {
 
 const TRANSCRIPTION_MODELS = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash"];
 const TEXT_MODELS = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash"];
+const IMAGE_MODELS = ["gemini-3-pro-image-preview"];
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -286,6 +287,64 @@ async function translateTranscript(client: GoogleGenAI, text: string, targetLang
   return JSON.parse(response.text);
 }
 
+type AgentHistoryItem = {
+  role?: string;
+  content?: string;
+};
+
+async function askAgent(client: GoogleGenAI, message: string, history: AgentHistoryItem[] = []) {
+  const recentHistory = history
+    .slice(-10)
+    .map(item => `${item.role === "assistant" ? "Assistant" : "User"}: ${item.content || ""}`)
+    .join("\n");
+
+  const response = await generateWithModelFallback(client, (model) => ({
+    model,
+    contents: `You are DG Transcribe AI Agent, a helpful assistant inside a transcription app.
+Answer clearly in the user's language. If the user asks in Khmer, answer in Khmer.
+Help with general questions, writing, summaries, transcription workflows, and app usage.
+
+Recent conversation:
+${recentHistory || "(none)"}
+
+User:
+${message}`,
+  }));
+
+  return { text: response.text || "I could not create a response. Please try again." };
+}
+
+async function createAgentImage(client: GoogleGenAI, prompt: string) {
+  let lastError: unknown;
+
+  for (const model of IMAGE_MODELS) {
+    try {
+      const interaction = await (client as any).interactions.create({
+        model,
+        input: prompt,
+        response_modalities: ["image"],
+      });
+
+      const imageOutput = interaction.outputs?.find((output: any) => output.type === "image" && output.data);
+      if (imageOutput?.data) {
+        return {
+          imageUrl: `data:${imageOutput.mime_type || "image/png"};base64,${imageOutput.data}`,
+          text: "Image created.",
+        };
+      }
+
+      throw new Error("Gemini did not return an image.");
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableGeminiError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 function getClientSafeErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   const lowerMessage = message.toLowerCase();
@@ -324,6 +383,10 @@ function getClientSafeErrorMessage(error: unknown) {
 
   if (lowerMessage.includes("503") || lowerMessage.includes("unavailable")) {
     return "Gemini is temporarily unavailable. Please try again in a few minutes.";
+  }
+
+  if (lowerMessage.includes("image") || lowerMessage.includes("response_modalities") || lowerMessage.includes("modalities")) {
+    return "Image generation is not available for this Gemini key/model yet. Please check Gemini image model access or try a text question.";
   }
 
   return "AI transcription failed. Please try a compressed file, or check the Gemini API key and quota.";
@@ -413,6 +476,26 @@ export async function createApp(options: { includeVite?: boolean } = {}) {
       res.json(await translateTranscript(getGeminiClient(getRequestGeminiKey(req)), text, targetLanguage));
     } catch (error) {
       console.error("Translate API Error:", error);
+      res.status(500).json({ error: getClientSafeErrorMessage(error) });
+    }
+  });
+
+  app.post("/api/agent", async (req, res) => {
+    const { message, mode, history } = req.body || {};
+
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Agent message is required." });
+    }
+
+    try {
+      const client = getGeminiClient(getRequestGeminiKey(req));
+      if (mode === "image") {
+        return res.json(await createAgentImage(client, message));
+      }
+
+      return res.json(await askAgent(client, message, Array.isArray(history) ? history : []));
+    } catch (error) {
+      console.error("Agent API Error:", error);
       res.status(500).json({ error: getClientSafeErrorMessage(error) });
     }
   });

@@ -27,3 +27,24 @@ export async function translateText(text: string, targetLang: string) {
     targetLanguage: targetLang,
   });
 }
+
+export type AgentHistoryItem = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export async function askAgent(message: string, history: AgentHistoryItem[]) {
+  return postJson<{ text: string }>('/api/agent', {
+    message,
+    history,
+    mode: 'chat',
+  });
+}
+
+export async function createAgentImage(message: string, history: AgentHistoryItem[]) {
+  return postJson<{ text?: string; imageUrl: string }>('/api/agent', {
+    message,
+    history,
+    mode: 'image',
+  });
+}
