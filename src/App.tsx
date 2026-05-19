@@ -35,6 +35,7 @@ import Markdown from 'react-markdown';
 
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024; // Supports long compressed audio/video uploads without browser base64 conversion.
 const AI_PROCESSING_TIMEOUT_MS = 60 * 60 * 1000;
+const JITSI_DOMAIN = 'meet.jit.si';
 
 const formatFileSize = (bytes: number) => {
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -48,6 +49,8 @@ const formatFileSize = (bytes: number) => {
 
   return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 };
+
+const makeSafeRoomName = (value: string) => value.replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 64);
 
 // --- Error Handling ---
 enum OperationType {
@@ -102,7 +105,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 // --- Types ---
-type Page = 'landing' | 'dashboard' | 'transcript' | 'settings';
+type Page = 'landing' | 'dashboard' | 'transcript' | 'settings' | 'video';
 
 interface Transcript {
   id: string;
@@ -183,6 +186,9 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [viewLanguage, setViewLanguage] = useState<string>('original');
   const [agentInstruction, setAgentInstruction] = useState('');
+  const [videoRoomName, setVideoRoomName] = useState('dg-transcribe-live-room');
+  const safeVideoRoomName = makeSafeRoomName(videoRoomName || 'dg-transcribe-live-room');
+  const videoMeetingUrl = `https://${JITSI_DOMAIN}/${safeVideoRoomName}`;
 
   useEffect(() => {
     if (!selectedTranscript) {
@@ -608,6 +614,16 @@ export default function App() {
     }
   };
 
+  const handleCopyMeetingLink = async () => {
+    try {
+      await navigator.clipboard.writeText(videoMeetingUrl);
+      setUploadError('Video call link copied. Share it with up to 20 participants.');
+    } catch (error) {
+      console.error("Copy meeting link failed:", error);
+      setUploadError(videoMeetingUrl);
+    }
+  };
+
   if (loading) return (
     <div className="min-h-screen bg-[#09090B] flex items-center justify-center">
       <Sparkles className="w-12 h-12 text-indigo-500 animate-pulse" />
@@ -705,9 +721,32 @@ export default function App() {
         
         <nav className="flex-1 px-4 space-y-1 py-4">
           <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold px-3 mb-4">Core Actions</div>
-          <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-indigo-600/10 text-indigo-400 border border-indigo-500/20 font-medium text-sm text-left">
+          <button
+            onClick={() => setCurrentPage('dashboard')}
+            className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg border font-medium text-sm text-left transition-colors",
+              currentPage === 'dashboard'
+                ? "bg-indigo-600/10 text-indigo-400 border-indigo-500/20"
+                : "text-slate-400 border-transparent hover:bg-slate-800/50 hover:text-slate-200"
+            )}
+          >
             <LayoutDashboard className="w-4 h-4" />
             Dashboard
+          </button>
+          <button
+            onClick={() => {
+              setCurrentPage('video');
+              setSelectedTranscriptId(null);
+            }}
+            className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg border font-medium text-sm text-left transition-colors",
+              currentPage === 'video'
+                ? "bg-indigo-600/10 text-indigo-400 border-indigo-500/20"
+                : "text-slate-400 border-transparent hover:bg-slate-800/50 hover:text-slate-200"
+            )}
+          >
+            <FileVideo className="w-4 h-4" />
+            Video Call
           </button>
           
           <div className="mt-8">
@@ -716,7 +755,10 @@ export default function App() {
                {transcripts.map(t => (
                  <div key={t.id} className="group relative flex items-center">
                    <button 
-                    onClick={() => setSelectedTranscriptId(t.id)}
+                    onClick={() => {
+                      setSelectedTranscriptId(t.id);
+                      setCurrentPage('dashboard');
+                    }}
                     className={cn(
                       "flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-xs transition-colors text-left truncate pr-10",
                       selectedTranscriptId === t.id 
@@ -791,7 +833,7 @@ export default function App() {
               </button>
             )}
             <span className="text-slate-500 uppercase tracking-widest font-bold flex items-center gap-2">
-              Dashboard
+              {currentPage === 'video' ? 'Video Call' : 'Dashboard'}
               <span className="flex items-center gap-1 bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded text-[8px] animate-pulse">
                 <Zap className="w-2.5 h-2.5 fill-green-500" />
                 HIGH-SPEED AI
@@ -833,6 +875,53 @@ export default function App() {
             </div>
           )}
 
+          {currentPage === 'video' ? (
+            <div className="max-w-8xl mx-auto space-y-6">
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex flex-col gap-1"
+              >
+                <h1 className="text-2xl font-bold text-white">Video Call</h1>
+                <p className="text-slate-400 text-sm">Create a room and share the link with 10 to 20 participants.</p>
+              </motion.div>
+
+              <GlassCard className="p-6 space-y-5">
+                <div className="flex flex-col lg:flex-row gap-4 lg:items-end">
+                  <div className="flex-1">
+                    <label className="text-[10px] uppercase tracking-widest text-slate-600 font-bold block mb-2 px-1">Room Name</label>
+                    <input
+                      type="text"
+                      value={videoRoomName}
+                      onChange={(e) => setVideoRoomName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder:text-slate-700 focus:border-indigo-500/60 outline-none transition-colors"
+                      placeholder="dg-transcribe-live-room"
+                    />
+                  </div>
+                  <Button variant="secondary" onClick={handleCopyMeetingLink}>
+                    <Share2 className="w-4 h-4 mr-2" />
+                    Copy Link
+                  </Button>
+                  <Button onClick={() => window.open(videoMeetingUrl, '_blank', 'noopener,noreferrer')}>
+                    <FileVideo className="w-4 h-4 mr-2" />
+                    Open Room
+                  </Button>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-xs text-slate-400 break-all">
+                  {videoMeetingUrl}
+                </div>
+
+                <iframe
+                  title="DG Transcribe Video Call"
+                  src={`${videoMeetingUrl}#config.prejoinPageEnabled=true&config.disableDeepLinking=true&interfaceConfig.SHOW_JITSI_WATERMARK=false`}
+                  allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
+                  className="w-full h-[70vh] min-h-[520px] rounded-2xl border border-slate-800 bg-slate-950"
+                />
+              </GlassCard>
+            </div>
+          ) : (
+            <>
           <div className="max-w-8xl mx-auto mb-8">
             <motion.div 
               initial={{ opacity: 0, y: -10 }}
@@ -1196,6 +1285,8 @@ export default function App() {
                )}
             </div>
           </div>
+            </>
+          )}
         </div>
 
         {/* Bottom Activity Bar */}
