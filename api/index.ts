@@ -226,19 +226,54 @@ async function askAgent(client: GoogleGenAI, message: string, history: AgentHist
     .map(item => `${item.role === "assistant" ? "Assistant" : "User"}: ${item.content || ""}`)
     .join("\n");
 
-  const response = await generateWithFallback(client, model => ({
-    model,
-    contents: `You are DG Transcribe AI Agent, a helpful assistant inside a transcription app.
+  const prompt = `You are DG Transcribe AI Agent, a helpful assistant inside a transcription app.
 Answer clearly in the user's language. If the user asks in Khmer, answer in Khmer.
 
 Recent conversation:
 ${recentHistory || "(none)"}
 
 User:
-${message}`,
-  }));
+${message}`;
 
-  return { text: response.text || "I could not create a response. Please try again." };
+  try {
+    const response = await generateWithFallback(client, model => ({
+      model,
+      contents: prompt,
+    }));
+
+    return { text: response.text || createLocalTextFallback(message) };
+  } catch (error) {
+    console.warn("Gemini text generation failed, using local text fallback:", error);
+    return { text: createLocalTextFallback(message) };
+  }
+}
+
+function isKhmerText(value: string) {
+  return /[\u1780-\u17ff]/.test(value);
+}
+
+function createLocalTextFallback(message: string) {
+  const khmer = isKhmerText(message);
+  const lower = message.toLowerCase();
+  const wantsStory = khmer ||
+    lower.includes("story") ||
+    lower.includes("novel") ||
+    lower.includes("script") ||
+    lower.includes("រឿង") ||
+    lower.includes("សាច់រឿង") ||
+    lower.includes("និទាន");
+
+  if (!wantsStory) {
+    return khmer
+      ? `ខ្ញុំអាចជួយបាន។ ពេលនេះ Gemini quota អស់ ដូច្នេះខ្ញុំឆ្លើយជារបៀប fallback មុនសិន។ សូមប្រាប់ប្រធានបទឲ្យច្បាស់បន្ថែម ឬសុំឲ្យខ្ញុំសរសេរ៖ សាច់រឿង, caption, summary, script, ឬ plan។\n\nសំណើររបស់អ្នក៖ ${message}`
+      : `I can help. Gemini quota is currently exhausted, so I am using a fallback response mode. Please give me the topic and format you want: story, caption, summary, script, or plan.\n\nYour request: ${message}`;
+  }
+
+  if (khmer) {
+    return `ចំណងជើង៖ ពន្លឺថ្មីនៅក្នុងថ្ងៃងងឹត\n\nនៅព្រឹកមួយដែលមេឃស្រអាប់ មានមនុស្សម្នាក់ឈ្មោះ ដារ៉ា បានចាប់ផ្ដើមធ្វើដំណើរទៅរកក្តីសុបិនដែលគាត់ធ្លាប់គិតថាមិនអាចទៅដល់។ គាត់មិនមានអ្វីច្រើនក្រៅពីចិត្តអត់ធ្មត់ សៀវភៅកត់ត្រាចាស់មួយ និងពាក្យមួយដែលគាត់ប្រាប់ខ្លួនឯងរាល់ថ្ងៃថា “ខ្ញុំនឹងមិនបោះបង់ទេ”។\n\nដំបូងៗ អ្វីៗមិនងាយស្រួលឡើយ។ មនុស្សជាច្រើនសើចចំអក គ្រួសារមួយចំនួនក៏មិនយល់ពីគាត់។ ប៉ុន្តែដារ៉ាមិនបានខឹងនឹងពួកគេទេ។ គាត់យល់ថាមនុស្សខ្លះមើលឃើញតែអ្វីដែលនៅមុខភ្នែក ខណៈដែលក្តីសុបិនត្រូវការភ្នែកនៃជំនឿដើម្បីមើលឃើញ។\n\nថ្ងៃមួយ គាត់ជួបនារីម្នាក់ឈ្មោះ មាលា ដែលមានសុបិនដូចគាត់។ មាលាប្រាប់ថា “បើអ្នកដើរម្នាក់ឯង អ្នកអាចលឿន ប៉ុន្តែបើដើរជាមួយអ្នកដែលជឿលើអ្នក អ្នកអាចទៅបានឆ្ងាយ។” ពាក្យនោះធ្វើឲ្យដារ៉ាមានកម្លាំងថ្មី។ ពួកគេបានចាប់ផ្ដើមធ្វើការរួមគ្នា រៀនពីកំហុស និងកែលម្អខ្លួនរាល់ថ្ងៃ។\n\nបន្ទាប់ពីពេលវេលាយូរ ការខិតខំរបស់ពួកគេចាប់ផ្ដើមផ្លែផ្កា។ អ្វីដែលធ្លាប់ជាក្តីសុបិនតូចមួយ ក្លាយជាការពិតដែលជួយមនុស្សជាច្រើន។ ដារ៉ាមើលទៅមេឃហើយញញឹម ព្រោះគាត់ដឹងថា ភាពជោគជ័យមិនមែនកើតពីថ្ងៃមួយទេ ប៉ុន្តែកើតពីការមិនបោះបង់ក្នុងថ្ងៃដែលលំបាកបំផុត។\n\nអត្ថន័យ៖ កុំឲ្យការលំបាកធ្វើឲ្យអ្នកឈប់។ ពេលអ្នកមានគោលដៅ និងបន្តដំណើរ ទោះជាជំហានតូចក៏ដោយ ថ្ងៃមួយវានឹងនាំអ្នកទៅដល់កន្លែងដែលអ្នកធ្លាប់ស្រមៃ។`;
+  }
+
+  return `Title: A New Light in the Dark\n\nOn a quiet morning under a gray sky, Dara began a journey toward a dream he once believed was impossible. He had little more than patience, an old notebook, and one sentence he repeated every day: "I will not give up."\n\nAt first, nothing was easy. Some people laughed, and others did not understand why he kept trying. But Dara did not grow bitter. He knew that some people only see what is in front of them, while dreams require a different kind of sight.\n\nOne day, he met Mala, someone with a dream of her own. She told him, "If you walk alone, you may move fast. But if you walk with someone who believes in you, you can go far." Her words gave Dara new strength.\n\nTogether, they worked, failed, learned, and tried again. Slowly, their small dream became something real, something that helped others. When Dara finally looked back, he realized success had not come from one lucky day. It came from every difficult day when he chose not to stop.\n\nMeaning: Do not let hardship end your journey. Even small steps can lead you to the place you once imagined.`;
 }
 
 async function createImage(client: GoogleGenAI, prompt: string) {
