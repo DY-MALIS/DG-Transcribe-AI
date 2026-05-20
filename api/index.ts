@@ -241,7 +241,8 @@ ${message}`;
       contents: prompt,
     }));
 
-    return { text: response.text || createLocalTextFallback(message) };
+    const text = response.text || "";
+    return { text: isWeakAgentResponse(text, message) ? createLocalTextFallback(message) : text };
   } catch (error) {
     console.warn("Gemini text generation failed, using local text fallback:", error);
     return { text: createLocalTextFallback(message) };
@@ -254,14 +255,7 @@ function isKhmerText(value: string) {
 
 function createLocalTextFallback(message: string) {
   const khmer = isKhmerText(message);
-  const lower = message.toLowerCase();
-  const wantsStory = khmer ||
-    lower.includes("story") ||
-    lower.includes("novel") ||
-    lower.includes("script") ||
-    lower.includes("រឿង") ||
-    lower.includes("សាច់រឿង") ||
-    lower.includes("និទាន");
+  const wantsStory = isStoryRequest(message);
 
   if (!wantsStory) {
     return khmer
@@ -274,6 +268,26 @@ function createLocalTextFallback(message: string) {
   }
 
   return `Title: A New Light in the Dark\n\nOn a quiet morning under a gray sky, Dara began a journey toward a dream he once believed was impossible. He had little more than patience, an old notebook, and one sentence he repeated every day: "I will not give up."\n\nAt first, nothing was easy. Some people laughed, and others did not understand why he kept trying. But Dara did not grow bitter. He knew that some people only see what is in front of them, while dreams require a different kind of sight.\n\nOne day, he met Mala, someone with a dream of her own. She told him, "If you walk alone, you may move fast. But if you walk with someone who believes in you, you can go far." Her words gave Dara new strength.\n\nTogether, they worked, failed, learned, and tried again. Slowly, their small dream became something real, something that helped others. When Dara finally looked back, he realized success had not come from one lucky day. It came from every difficult day when he chose not to stop.\n\nMeaning: Do not let hardship end your journey. Even small steps can lead you to the place you once imagined.`;
+}
+
+function isStoryRequest(message: string) {
+  const lower = message.toLowerCase();
+  return isKhmerText(message) ||
+    lower.includes("story") ||
+    lower.includes("novel") ||
+    lower.includes("script") ||
+    lower.includes("រឿង") ||
+    lower.includes("សាច់រឿង") ||
+    lower.includes("និទាន");
+}
+
+function isWeakAgentResponse(text: string, message: string) {
+  if (!isStoryRequest(message)) return !text.trim();
+  const lower = text.toLowerCase();
+  return text.trim().length < 300 ||
+    lower.includes("how can i assist") ||
+    lower.includes("please tell me") ||
+    lower.includes("i can help");
 }
 
 async function createImage(client: GoogleGenAI, prompt: string) {
