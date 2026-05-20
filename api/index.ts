@@ -263,11 +263,16 @@ async function createImage(client: GoogleGenAI, prompt: string) {
       throw new Error("Gemini did not return an image.");
     } catch (error) {
       lastError = error;
-      if (!canTryNextModel(error)) throw error;
+      if (!canTryNextModel(error)) break;
     }
   }
 
-  throw lastError;
+  console.warn("Gemini image generation failed, using Pollinations fallback:", lastError);
+  const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
+  return {
+    imageUrl: fallbackUrl,
+    text: "Image created with fallback generator because Gemini image quota/model was unavailable.",
+  };
 }
 
 function getSafeError(error: unknown) {
