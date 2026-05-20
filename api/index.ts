@@ -226,7 +226,7 @@ async function askAgent(client: GoogleGenAI, message: string, history: AgentHist
     .map(item => `${item.role === "assistant" ? "Assistant" : "User"}: ${item.content || ""}`)
     .join("\n");
 
-  const prompt = `You are DG Transcribe AI Agent, a helpful assistant inside a transcription app.
+  const prompt = `You are Master AI Agent, a helpful assistant inside a transcription app.
 Answer clearly in the user's language. If the user asks in Khmer, answer in Khmer.
 
 Recent conversation:
@@ -338,7 +338,7 @@ function getSafeError(error: unknown) {
     return "Gemini quota is exhausted. Add billing/quota or add more keys in GEMINI_API_KEYS.";
   }
   if (lower.includes("image") || lower.includes("modalit")) {
-    return "Image generation is not available for this Gemini key/model yet. Try Ask Agent or enable Gemini image model access.";
+    return "Image generation is not available for this Gemini key/model yet. Try Ask Master AI or enable Gemini image model access.";
   }
   if (message.includes("Missing GEMINI_API_KEY")) {
     return message;

@@ -198,7 +198,7 @@ export default function App() {
     {
       id: 'welcome',
       role: 'assistant',
-      content: 'សួស្តី! ខ្ញុំជា DG Agent។ អ្នកអាចសួរខ្ញុំ ឬសរសេរ prompt ដើម្បីបង្កើតរូបភាពបាន។',
+      content: 'សួស្តី! ខ្ញុំជា Master AI Agent។ អ្នកអាចសួរខ្ញុំ ឬសរសេរ prompt ដើម្បីបង្កើតរូបភាពបាន។',
     },
   ]);
 
@@ -820,7 +820,7 @@ export default function App() {
             )}
           >
             <Bot className="w-4 h-4" />
-            AI Agent
+            Master AI Agent
           </button>
           
           <div className="mt-8">
@@ -907,7 +907,7 @@ export default function App() {
               </button>
             )}
             <span className="text-slate-500 uppercase tracking-widest font-bold flex items-center gap-2">
-              {currentPage === 'agent' ? 'AI Agent' : 'Dashboard'}
+              {currentPage === 'agent' ? 'Master AI Agent' : 'Dashboard'}
               <span className="flex items-center gap-1 bg-green-500/10 text-green-500 px-1.5 py-0.5 rounded text-[8px] animate-pulse">
                 <Zap className="w-2.5 h-2.5 fill-green-500" />
                 HIGH-SPEED AI
@@ -956,7 +956,7 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 className="flex flex-col gap-1"
               >
-                <h1 className="text-2xl font-bold text-white">AI Agent</h1>
+                <h1 className="text-2xl font-bold text-white">Master AI Agent</h1>
                 <p className="text-slate-400 text-sm">Ask questions, write content, or create images with Gemini.</p>
               </motion.div>
 
@@ -966,7 +966,7 @@ export default function App() {
                     <Bot className="w-6 h-6" />
                   </div>
                   <div>
-                    <h2 className="text-sm font-bold text-white uppercase tracking-tight">DG Agent</h2>
+                    <h2 className="text-sm font-bold text-white uppercase tracking-tight">Master AI Agent</h2>
                     <p className="text-xs text-slate-500">Chat answers and image creation powered by the server Gemini key.</p>
                   </div>
                 </div>
@@ -1010,7 +1010,7 @@ export default function App() {
                       <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-300">
                         <Sparkles className="w-4 h-4 animate-pulse" />
                       </div>
-                      Agent is thinking...
+                      Master AI Agent is thinking...
                     </div>
                   )}
                 </div>
@@ -1045,7 +1045,7 @@ export default function App() {
                           onClick={() => handleAgentSubmit('chat')}
                         >
                           <Send className="w-4 h-4 mr-2" />
-                          Ask Agent
+                          Ask Master AI
                         </Button>
                       </div>
                     </div>
@@ -1303,7 +1303,7 @@ export default function App() {
                                 <div className="mt-4 pt-4 border-t border-slate-800/40">
                                    <div className="flex items-center gap-2 mb-3">
                                       <Zap className="w-3 h-3 text-slate-500" />
-                                      <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">បញ្ជាភ្នាក់ងារ AI (Ask AI Agent)</span>
+                                      <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">បញ្ជាភ្នាក់ងារ AI (Ask Master AI Agent)</span>
                                    </div>
                                    <div className="flex gap-2">
                                       <input 
